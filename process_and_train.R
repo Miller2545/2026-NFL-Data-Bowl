@@ -266,7 +266,7 @@ dim(X_array)
 # Expect: N_samples x 10 x 9
 
 # Time input: [N, 1]
-time_input <- matrix(train_frames$t_rel, ncol = 1)
+time_input <- matrix(train_frames$t_input, ncol = 1)
 dim(time_input)
 # N_samples x 1
 
