@@ -46,6 +46,8 @@ git checkout -b <gmuid>
 
 This will create your own branch so that we have a main branch that we will always have something working code-wise, and our own branches that we change ourselves. With us all working in the same project this allows us to be able to work within the same files and not step on eachothers toes.
 
+
+#### 3. Gitting Committed
 ```bash
 git status
 ```
@@ -83,5 +85,8 @@ git commit -m "Added: git commit to tutorial section of README.md"
 git push
 ```
 
+#### 4. Profit
+
 The following above will add all files to your commit, commit the changes with the message "Added: git commit to tutorial section of README.md", and then push the changes to github.
 
+This will push it to your working branch. When it comes to merging all of our work into the main working branch, I can handle that to make is easier!
