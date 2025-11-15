@@ -140,3 +140,55 @@ saveRDS(train_final,   "data/train_final_endpos.rds")
 rm(input_all, output_all, release_ctx, release_pois, train_final, output_final)
 gc()
 
+input_all <- readRDS("data/input_all_processed.rds")
+release_ctx <- readRDS("data/release_context_all.rds")
+release_pois <- readRDS("data/release_context_pois.rds")
+final_endpos <- readRDS("data/train_final_endpos.rds")
+
+input_joined <- input_all %>%
+  left_join(
+    release_ctx %>%
+      select(game_id, play_id, nfl_id, release_frame = frame_id),
+    by = c("game_id", "play_id", "nfl_id")
+  )
+
+# Number of frames to keep starting from last frame (release)
+# If there are less than 10 frames padding with 0's
+n_frames <- 10
+
+trimmed <- input_joined %>%
+  filter(frame_id <= release_frame,
+         frame_id >= release_frame - n_frames + 1)
+
+input_feature_cols <- c(
+  "x", "y",
+  "s", "a",
+  "o", "dir",
+  "ball_land_x", "ball_land_y",
+  "absolute_yardline_number"
+)
+
+# One row per player within a play
+padded_sequences <- trimmed %>%
+  arrange(game_id, play_id, nfl_id, frame_id) %>%
+  group_by(game_id, play_id, nfl_id, release_frame) %>%
+  summarize(
+    seq_mat = list(as.matrix(across(all_of(input_feature_cols)))),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    real_len = map_int(seq_mat, nrow),
+    padded_mat = map(
+      seq_mat,
+      ~ {
+        real_len <- nrow(.x)
+        if (real_len == n_frames) {
+          .x
+        } else {
+          pad_rows <- matrix(0, nrow = n_frames - real_len, ncol = ncol(.x))
+          rbind(pad_rows, .x)
+        }
+      }
+    )
+  )
+
