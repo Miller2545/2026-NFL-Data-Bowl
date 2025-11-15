@@ -132,7 +132,7 @@ def predict(test: pl.DataFrame, test_input: pl.DataFrame) -> pl.DataFrame | pd.D
     if len(test) == 0:
         return pl.DataFrame({"x": [], "y": []})
 
-    # Convert Polars -> Pandas for easier reuse of R-like logic
+    # Convert Polars -> Pandas because we love R logic we love R logic
     test_df = test.to_pandas()
     test_input_df = test_input.to_pandas()
 
@@ -142,7 +142,7 @@ def predict(test: pl.DataFrame, test_input: pl.DataFrame) -> pl.DataFrame | pd.D
     # Build batch inputs: (N, 10, 9) and (N, 1)
     X_batch, t_batch = build_batch_inputs(test_df, test_input_df)
 
-    # Run model: names must match your R layer names: "seq_input" and "time_input"
+    # Run model:
     preds = model.predict(
         {"seq_input": X_batch, "time_input": t_batch},
         verbose=0
