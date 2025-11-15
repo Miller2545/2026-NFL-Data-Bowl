@@ -7,7 +7,9 @@ packages <- c(
   "vroom",
   "stringr",
   "lubridate",
-  "purrr"
+  "purrr",
+  "keras",
+  "tensorflow"
 )
 
 # Installs packages if they aren't already downloaded
@@ -156,10 +158,7 @@ input_joined <- input_all %>%
 # If there are less than 10 frames padding with 0's
 n_frames <- 10
 
-trimmed <- input_joined %>%
-  filter(frame_id <= release_frame,
-         frame_id >= release_frame - n_frames + 1)
-
+# Features to feed into the model per frame
 input_feature_cols <- c(
   "x", "y",
   "s", "a",
@@ -168,27 +167,47 @@ input_feature_cols <- c(
   "absolute_yardline_number"
 )
 
-# One row per player within a play
-padded_sequences <- trimmed %>%
-  arrange(game_id, play_id, nfl_id, frame_id) %>%
-  group_by(game_id, play_id, nfl_id, release_frame) %>%
-  summarize(
-    seq_mat = list(as.matrix(across(all_of(input_feature_cols)))),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    real_len = map_int(seq_mat, nrow),
-    padded_mat = map(
-      seq_mat,
-      ~ {
-        real_len <- nrow(.x)
-        if (real_len == n_frames) {
-          .x
-        } else {
-          pad_rows <- matrix(0, nrow = n_frames - real_len, ncol = ncol(.x))
-          rbind(pad_rows, .x)
-        }
-      }
-    )
+# 1) Attach release_frame to every row
+input_joined <- input_all %>%
+  left_join(
+    release_ctx %>%
+      select(game_id, play_id, nfl_id, release_frame = frame_id),
+    by = c("game_id", "play_id", "nfl_id")
   )
 
+# 2) For each (game, play, player):
+#    - sort frames by time
+#    - take the last up to n_frames
+#    - pad with zeros on top if fewer than n_frames
+padded_sequences <- input_joined %>%
+  filter(!is.na(release_frame)) %>%   # just in case of bad joins
+  group_by(game_id, play_id, nfl_id, release_frame) %>%
+  group_modify(~ {
+    df <- .x %>%
+      arrange(frame_id) %>%
+      select(all_of(input_feature_cols))
+    
+    # last up to n_frames
+    if (nrow(df) > n_frames) {
+      df <- df[(nrow(df) - n_frames + 1):nrow(df), , drop = FALSE]
+    }
+    
+    real_len <- nrow(df)
+    
+    # pad with zeros at the TOP if fewer than n_frames
+    if (real_len < n_frames) {
+      pad_rows <- as_tibble(
+        matrix(0, nrow = n_frames - real_len, ncol = ncol(df))
+      )
+      names(pad_rows) <- names(df)
+      df_padded <- bind_rows(pad_rows, df)
+    } else {
+      df_padded <- df
+    }
+    
+    tibble(
+      real_len   = real_len,
+      padded_mat = list(as.matrix(df_padded))
+    )
+  }) %>%
+  ungroup()
