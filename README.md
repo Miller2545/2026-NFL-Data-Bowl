@@ -61,3 +61,27 @@ nothing to commit, working tree clean
 
 If you haven't saved a file with changes yet.
 
+When you save changes it will look like the following:
+
+```bash
+On branch main
+Your branch is up to date with 'origin/main'.
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+        modified:   README.md
+
+no changes added to commit (use "git add" and/or "git commit -a")
+```
+
+Now since we have changes, we can either use the UI in either RStudio or VScode, or go to the command line and add, commit, and push our changes.
+
+```bash
+git add .
+git commit -m "Added: git commit to tutorial section of README.md"
+git push
+```
+
+The following above will add all files to your commit, commit the changes with the message "Added: git commit to tutorial section of README.md", and then push the changes to github.
+
