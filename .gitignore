@@ -3,3 +3,6 @@
 *.xlsx
 *.py
 *.proto
+.Rproj.user
+.Rhistory
+*.Rproj
