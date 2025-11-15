@@ -6,7 +6,7 @@ This will be the location for files and whatnot for team NFL YIPPEE (name still 
 
 
 
-### Git Basics: Cloning, Branching, Saving, and Pushing Your Work
+### Git Tutorial
 
 This quick guide will teach you how to:
 
