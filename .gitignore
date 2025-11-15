@@ -1,3 +1,5 @@
 # Ignoring Excel and CSV files
 *.csv
 *.xlsx
+*.py
+*.proto
