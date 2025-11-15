@@ -7,8 +7,6 @@ import tensorflow as tf
 
 import kaggle_evaluation.nfl_inference_server
 
-# ====== CONFIG: change this to YOUR model path ======
-# If you used save_model_tf(model, "models/lstm_frame_conditioned_tf")
 MODEL_PATH = "/kaggle/input/nfl-r-lstm-model/lstm_frame_conditioned_tf"
 
 # If you used HDF5 instead, use e.g.:
@@ -34,7 +32,6 @@ def load_model_once():
     """Load the Keras model from disk only once."""
     global _model
     if _model is None:
-        # SavedModel or HDF5 – tf.keras handles both
         _model = tf.keras.models.load_model(MODEL_PATH)
     return _model
 
