@@ -245,7 +245,7 @@ train_frames <- output_pois %>%
 # Normalized time index for each future frame
 train_frames <- train_frames %>%
   mutate(
-    t_rel = frame_id / num_frames_output  # in (0,1]
+    t_input = frame_id
   )
 
 # Model building time, yippee
