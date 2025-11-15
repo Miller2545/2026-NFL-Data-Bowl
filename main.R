@@ -1,10 +1,11 @@
 # Load packages below
 packages <- c(
   "tidyverse",
-  "data.table",
+  "dplyr",
   "xgboost",
   "caret",
-  "ggplot2"
+  "ggplot2",
+  "readxl"
 )
 
 # Installs packages if they aren't already downloaded
