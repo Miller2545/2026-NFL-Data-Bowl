@@ -50,13 +50,10 @@ Defines three neural network architectures used for training and ensembling.
 - Two-layer LSTM sequence encoder.
 - Time-conditioning branch (dense network with scalar time).
 - MLP head predicts (x, y).
-- Strong at short-term temporal patterns.
 
 ##### 2. GRUFrameConditionedModel
 
 - Similar to LSTM model but with GRU layers.
-- Lower memory footprint.
-- Different inductive biases → improves ensemble diversity.
 
 ##### 3. TransformerFrameConditionedModel
 
@@ -64,10 +61,6 @@ Defines three neural network architectures used for training and ensembling.
 - Learnable CLS token for sequence summarization.
 - Transformer encoder stack (multi-head attention).
 - Time-conditioning branch.
-- Strongest long-range spatiotemporal learner.
-
-Why multiple models?  
-Ensembles greatly outperform any single architecture.
 
 ---
 
@@ -131,34 +124,10 @@ Pipeline:
 - Loads LSTM, GRU, Transformer
 - Loads ensemble_weights_by_t.csv
 - For each row with horizon `t_int`:
-  y = w_lstm*y_lstm + w_gru*y_gru + w_trans*y_trans
+ $$y = w_{lstm}*y_{lstm} + w_{gru}*y_{gru} + w_{tform}*y_{tform}$$
 - Produces Kaggle submission predictions for (x, y)
 
 This file is used in the Kaggle notebook environment.
-
----
-
-## 🗂️ Folder Structure
-
-2026-NFL-Data-Bowl/
-├─ preprocess.py
-├─ model_torch.py
-├─ train_torch.py
-├─ evaluate_torch_weighted.py
-├─ inference_ensemble.py
-│
-├─ models/
-│   ├─ model_lstm/best_model.pt
-│   ├─ model_gru/best_model.pt
-│   └─ model_transformer/best_model.pt
-│
-├─ data/
-│   ├─ train/
-│   └─ processed/
-│
-└─ plots/
-    ├─ loss_curves/
-    └─ rmse_per_horizon/
 
 ---
 
