@@ -144,7 +144,7 @@ def main():
         optimizer,
         mode="min",
         factor=0.5,
-        patience=2,
+        patience=3,
         min_lr=1e-5,
         verbose=True,
     )
@@ -157,7 +157,7 @@ def main():
 
     best_val_loss = float("inf")
     best_state = None
-    patience = 5
+    patience = 10
     patience_counter = 0
 
     history = {
