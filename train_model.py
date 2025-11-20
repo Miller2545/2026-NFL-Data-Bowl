@@ -11,25 +11,48 @@ from tensorflow import keras
 from keras import layers
 import matplotlib.pyplot as plt
 import time
-
 from preprocess import preprocess_inputs, build_training_rows
+from keras import mixed_precision
+
+mixed_precision.set_global_policy("mixed_float16")
 
 def build_model(n_in_steps: int, n_features: int, hidden_units: int = 64) -> keras.Model:
-    """Constructs the Keras model: Masking -> LSTM + Dense(time) -> concat -> MLP -> xy"""
+    """Constructs the Keras model: Masking -> LSTM stack + Dense(time) -> concat -> MLP -> xy"""
+
+    # Sequence input: [batch, time, features]
     seq_input = keras.Input(shape=(n_in_steps, n_features), name="seq_input")
+    # Scalar time input: [batch, 1]
     time_in   = keras.Input(shape=(1,), name="time_input")
 
+    # Sequence encoder
     x = layers.Masking(mask_value=0.0)(seq_input)
+
+    # First LSTM layer (returns sequences so a second LSTM can refine)
+    x = layers.LSTM(units=hidden_units, return_sequences=True)(x)
+
+    # Second LSTM layer (encodes the whole history into a single vector)
     x = layers.LSTM(units=hidden_units, return_sequences=False)(x)
 
-    t = layers.Dense(8, activation="relu")(time_in)
+    # Regularization
+    x = layers.Dropout(0.2)(x)
 
+    # Time branch
+    t = layers.Dense(16, activation="relu")(time_in)
+
+    # Merge sequence + time encoding
     merged = layers.Concatenate()([x, t])
-    z = layers.Dense(64, activation="relu")(merged)
+
+    # MLP head
+    z = layers.Dense(128, activation="relu")(merged)
+    z = layers.Dense(64, activation="relu")(z)
+
+    # Final (x, y) prediction
     out = layers.Dense(2, name="xy_output")(z)
 
     model = keras.Model(inputs=[seq_input, time_in], outputs=out)
-    model.compile(optimizer="adam", loss="mse")
+    model.compile(optimizer=keras.optimizers.Adam(learning_rate=1e-3),
+                  loss="mse")
+
     return model
 
 def parse_weeks(s: str):

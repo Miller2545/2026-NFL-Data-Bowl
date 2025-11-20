@@ -32,7 +32,7 @@ INPUT_DTYPES = {
     "num_frames_output": "float64",
     "ball_land_x": "float64",
     "ball_land_y": "float64",
-    "week": "float64",  # optional if already present
+    "week": "float64",
 }
 
 OUTPUT_DTYPES = {
@@ -42,12 +42,55 @@ OUTPUT_DTYPES = {
     "frame_id": "float64",
     "x": "float64",
     "y": "float64",
-    "week": "float64",  # optional if already present
+    "week": "float64",
 }
 
 INPUT_FEATURE_COLS = [
-    "x","y","s","a","o","dir","ball_land_x","ball_land_y","absolute_yardline_number"
+    "x",
+    "y",
+    "s",
+    "a",
+    "o",
+    "dir",
+    "ball_land_x",
+    "ball_land_y",
+    "absolute_yardline_number",
+    "dx",
+    "dy",
+    "ds",
+    "rel_x_ball",
+    "rel_y_ball",
+    "dist_to_ball_land",
 ]
+
+def _add_physics_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add simple physics/geometry-based features:
+      - dx, dy: frame-to-frame deltas in x,y
+      - ds: frame-to-frame delta in speed
+      - rel_x_ball, rel_y_ball: position relative to ball landing
+      - dist_to_ball_land: distance to ball landing
+    Assumes x,y,ball_land_x,ball_land_y are already normalized.
+    """
+    # Ensure sorted per player over time
+    df = df.sort_values(["game_id", "play_id", "nfl_id", "frame_id"], kind="mergesort")
+
+    g = df.groupby(["game_id", "play_id", "nfl_id"], sort=False)
+
+    # frame-to-frame deltas
+    df["dx"] = g["x"].diff().fillna(0.0)
+    df["dy"] = g["y"].diff().fillna(0.0)
+    df["ds"] = g["s"].diff().fillna(0.0)
+
+    # distance & relative position to ball landing
+    # (if ball_land_x/y are missing or NaN, we just get NaNs; that’s fine)
+    df["rel_x_ball"] = df["ball_land_x"] - df["x"]
+    df["rel_y_ball"] = df["ball_land_y"] - df["y"]
+    df["dist_to_ball_land"] = np.sqrt(
+        (df["rel_x_ball"] ** 2) + (df["rel_y_ball"] ** 2)
+    )
+
+    return df
 
 def _extract_week_from_name(name: str) -> Optional[int]:
     m = re.search(r"w([0-9]{2})", name)
@@ -133,6 +176,9 @@ def preprocess_inputs(
 
     # Normalize coordinates
     input_all = _normalize_xy(input_all)
+
+    # Add physics features
+    input_all = _add_physics_features(input_all)
 
     # Release context (max frame per player in play)
     idx = _last_frame_idx(input_all, ["game_id","play_id","nfl_id"])
