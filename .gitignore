@@ -1,4 +1,3 @@
-# Ignoring Excel and CSV files
 *.csv
 *.xlsx
 *.py
@@ -7,4 +6,12 @@
 .Rhistory
 *.Rproj
 *.rds
-!main.py
+*.json
+*.png
+*.txt
+__pycache__
+*/models/lstm_frame_conditioned_tf
+!preprocess.py
+!evalute.py
+!train_model.py
+!/models/best_model.keras
