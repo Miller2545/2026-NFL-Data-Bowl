@@ -70,29 +70,26 @@ python train_torch.py ^
   --model_dir models/model_transformer
 
 echo.
-echo ============================================
-echo Training Finished! Now Evaluating Ensemble
-echo ============================================
-echo.
+echo ---------------------------------------------
+echo NFL Big Data Bowl - Weighted Ensemble Evaluate
+echo ---------------------------------------------
 
-python ensemble_evaluate_torch.py ^
-  --lstm_model_path models/model_lstm/best_model.pt ^
-  --gru_model_path models/model_gru/best_model.pt ^
-  --transformer_model_path models/model_transformer/best_model.pt ^
+REM Evaluate on weeks 15-18
+python evaluate_torch_weighted.py ^
   --input_dir data/train ^
   --output_dir data/train ^
   --weeks 15-18 ^
   --n_frames %N_FRAMES% ^
-  --batch_size %BATCH_SIZE% ^
-  --save_csv
+  --model_lstm models/model_lstm/best_model.pt ^
+  --model_gru models/model_gru/best_model.pt ^
+  --model_trans models/model_transformer/best_model.pt ^
+  --out_dir ensemble_results
 
-echo.
-echo ============================================
-echo      Ensemble Evaluation Complete!
-echo ============================================
-echo Results written to:
-echo   - models/model_lstm/ensemble_competition_rmse.txt
-echo   - models/model_lstm/ensemble_rmse_by_t.csv
-echo   - artifacts/ensemble_preds_torch.csv
-echo.
+echo ---------------------------------------------
+echo Evaluation complete!
+echo Outputs created in: ensemble_results
+echo   - rmse_by_model_and_horizon.csv
+echo   - ensemble_weights_by_t.csv
+echo   - rmse_curve.png
+echo ---------------------------------------------
 pause
