@@ -1,6 +1,7 @@
 # evaluate_torch_weighted.py
 import argparse
 from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import torch
@@ -15,70 +16,91 @@ from model_torch import (
     TransformerFrameConditionedModel,
 )
 
+
 # ------------------------------
-# RMSE helper
+# Helpers
 # ------------------------------
 def rmse(y_true, y_pred):
+    """Root Mean Squared Error over (x,y) pairs."""
     return np.sqrt(((y_true - y_pred) ** 2).mean())
 
 
-# ------------------------------
-# Solve non-negative weights
-# ------------------------------
 def solve_softmax_weights(loss_lstm, loss_gru, loss_trans):
-    losses = np.array([loss_lstm, loss_gru, loss_trans])
+    """Softmax over negative losses → nonnegative weights that sum to 1."""
+    losses = np.array([loss_lstm, loss_gru, loss_trans], dtype=np.float64)
     weights = np.exp(-losses)
     weights /= weights.sum()
     return weights
 
 
 def solve_ridge_weights(y_true, preds_list, alpha=1e-3):
-    # preds_list = [pred_lstm, pred_gru, pred_trans] (each shape [N,2])
+    """
+    Ridge regression to learn per-horizon ensemble weights.
+
+    y_true:   [N,2]
+    preds_list: list of [N,2] arrays (LSTM, GRU, Transformer)
+    """
     X = np.stack(preds_list, axis=2)  # [N,2,3]
-    X = X.reshape(-1, 3)              # flatten coords: [2N,3]
+    X = X.reshape(-1, 3)              # [2N,3]
     Y = y_true.reshape(-1)            # [2N]
 
     A = X.T @ X + alpha * np.eye(3)
     b = X.T @ Y
 
     w = np.linalg.solve(A, b)
-    w = np.maximum(w, 0)
-    w /= w.sum()
+    w = np.maximum(w, 0.0)  # no negative weights
+    s = w.sum()
+    if s <= 0:
+        # fallback: equal weights
+        return np.array([1/3, 1/3, 1/3], dtype=np.float64)
+    w /= s
     return w
+
+
+def parse_weeks(s: str):
+    s = s.strip()
+    if "-" in s:
+        a, b = s.split("-", 1)
+        return [f"{w:02d}" for w in range(int(a), int(b) + 1)]
+    return [f"{int(x):02d}" for x in s.split(",") if x.strip()]
 
 
 # ------------------------------
 # Main
 # ------------------------------
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Evaluate LSTM/GRU/Transformer ensemble with per-horizon weights."
+    )
     parser.add_argument("--input_dir", type=Path, default=Path("data/train"))
     parser.add_argument("--output_dir", type=Path, default=Path("data/train"))
-    parser.add_argument("--weeks", type=str, required=True)
+    parser.add_argument("--weeks", type=str, required=True, help="e.g. '15-18'")
     parser.add_argument("--n_frames", type=int, default=10)
+
     parser.add_argument("--model_lstm", type=Path, required=True)
     parser.add_argument("--model_gru", type=Path, required=True)
     parser.add_argument("--model_trans", type=Path, required=True)
-    parser.add_argument("--out_dir", type=Path, default=Path("ensemble"))
+
+    parser.add_argument("--out_dir", type=Path, default=Path("ensemble_results"))
+    parser.add_argument("--batch_size", type=int, default=4096,
+                        help="Batch size to use during evaluation.")
     args = parser.parse_args()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------
-    # Parse weeks
+    # Weeks / file lists
     # ------------------------------
-    def parse_weeks(s):
-        s = s.strip()
-        if "-" in s:
-            a, b = s.split("-", 1)
-            return [f"{w:02d}" for w in range(int(a), int(b) + 1)]
-        return [f"{int(x):02d}" for x in s.split(",")]
-
     weeks = parse_weeks(args.weeks)
     input_files = [args.input_dir / f"input_2023_w{w}.csv" for w in weeks]
     output_files = [args.output_dir / f"output_2023_w{w}.csv" for w in weeks]
 
+    print(f"Evaluating on weeks: {weeks}")
     print("Loading + preprocessing validation data...")
+
+    # ------------------------------
+    # Preprocessing
+    # ------------------------------
     prep = preprocess_inputs(input_files, n_frames=args.n_frames)
     X_array, t_input, Y_array, rows = build_training_rows(
         output_files,
@@ -87,32 +109,34 @@ def main():
     )
 
     print("Shapes:")
-    print("X_array:", X_array.shape)
-    print("t_input:", t_input.shape)
-    print("Y_array:", Y_array.shape)
+    print("  X_array:", X_array.shape, "(N, time, features)")
+    print("  t_input:", t_input.shape, "(N, 1)")
+    print("  Y_array:", Y_array.shape, "(N, 2)")
+
+    N, T, F = X_array.shape
 
     # ------------------------------
     # Device
     # ------------------------------
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("Device:", device)
+    print("Using device:", device)
+    if device.type == "cuda":
+        print("GPU:", torch.cuda.get_device_name(0))
 
     # ------------------------------
-    # Load Models
+    # Load models
     # ------------------------------
-    N, T, F = X_array.shape
-
-    print("Loading LSTM...")
-    lstm = LSTMFrameConditionedModel(T, F).to(device)
+    print("Loading LSTM model from:", args.model_lstm)
+    lstm = LSTMFrameConditionedModel(T, F, hidden_units=64).to(device)
     lstm.load_state_dict(torch.load(args.model_lstm, map_location=device))
     lstm.eval()
 
-    print("Loading GRU...")
-    gru = GRUFrameConditionedModel(T, F).to(device)
+    print("Loading GRU model from:", args.model_gru)
+    gru = GRUFrameConditionedModel(T, F, hidden_units=64).to(device)
     gru.load_state_dict(torch.load(args.model_gru, map_location=device))
     gru.eval()
 
-    print("Loading Transformer...")
+    print("Loading Transformer model from:", args.model_trans)
     trans = TransformerFrameConditionedModel(
         n_in_steps=T,
         n_features=F,
@@ -126,36 +150,70 @@ def main():
     trans.eval()
 
     # ------------------------------
-    # Predict all samples
+    # Predict all samples (batched)
     # ------------------------------
-    print("Running predictions...")
+    print("Running predictions (batched)...")
 
-    X = torch.from_numpy(X_array).float().to(device)
-    t = torch.from_numpy(t_input).float().to(device)
+    X = torch.from_numpy(X_array).float()
+    t = torch.from_numpy(t_input).float()
+
+    batch_size = args.batch_size
+    use_cuda_amp = (device.type == "cuda")
+
+    pred_lstm_list = []
+    pred_gru_list = []
+    pred_trans_list = []
 
     with torch.no_grad():
-        with torch.amp.autocast("cuda", enabled=(device.type == "cuda")):
-            pred_lstm = lstm(X, t).cpu().numpy()
-            pred_gru = gru(X, t).cpu().numpy()
-            pred_trans = trans(X, t).cpu().numpy()
+        for start in tqdm(range(0, N, batch_size), desc="Batches"):
+            end = min(start + batch_size, N)
+            xb = X[start:end].to(device)
+            tb = t[start:end].to(device)
+
+            with torch.amp.autocast("cuda", enabled=use_cuda_amp):
+                out_lstm = lstm(xb, tb)       # [B,2]
+                out_gru = gru(xb, tb)         # [B,2]
+                out_trans = trans(xb, tb)     # [B,2]
+
+            pred_lstm_list.append(out_lstm.cpu().numpy())
+            pred_gru_list.append(out_gru.cpu().numpy())
+            pred_trans_list.append(out_trans.cpu().numpy())
+
+    pred_lstm = np.vstack(pred_lstm_list)   # [N,2]
+    pred_gru = np.vstack(pred_gru_list)     # [N,2]
+    pred_trans = np.vstack(pred_trans_list) # [N,2]
 
     print("Predictions complete.")
 
     # ------------------------------
-    # Compute RMSE per horizon
+    # Horizon (t_int) handling
     # ------------------------------
-    rows["t_int"] = rows["t_int"].astype(int)
+    # Ensure we have an integer horizon column
+    if "t_int" in rows.columns:
+        rows["t_int"] = rows["t_int"].astype(int)
+    else:
+        # Fallback: derive from t_input if needed
+        if "t_input" in rows.columns:
+            rows["t_int"] = rows["t_input"].round().astype(int)
+        else:
+            # As an absolute last resort, assume t_int == frame index offset
+            rows["t_int"] = np.arange(len(rows), dtype=int)
+
     horizons = sorted(rows["t_int"].unique())
 
+    # ------------------------------
+    # Compute RMSE & weights per horizon
+    # ------------------------------
     rmse_rows = []
     weight_rows = []
 
     print("Computing RMSE & optimal weights by horizon...")
-
     for h in horizons:
         idx = (rows["t_int"] == h).values
-        y_true = Y_array[idx]
+        if not idx.any():
+            continue
 
+        y_true = Y_array[idx]
         p_lstm = pred_lstm[idx]
         p_gru = pred_gru[idx]
         p_trans = pred_trans[idx]
@@ -164,22 +222,20 @@ def main():
         rmse_gru = rmse(y_true, p_gru)
         rmse_trans = rmse(y_true, p_trans)
 
-        # weight methods
+        # Candidate weighting methods
         w_soft = solve_softmax_weights(rmse_lstm, rmse_gru, rmse_trans)
         w_ridge = solve_ridge_weights(y_true, [p_lstm, p_gru, p_trans], alpha=1e-3)
 
-        # Evaluate both
         ensemble_soft = (w_soft[0] * p_lstm +
-                          w_soft[1] * p_gru +
-                          w_soft[2] * p_trans)
+                         w_soft[1] * p_gru +
+                         w_soft[2] * p_trans)
         ensemble_ridge = (w_ridge[0] * p_lstm +
-                           w_ridge[1] * p_gru +
-                           w_ridge[2] * p_trans)
+                          w_ridge[1] * p_gru +
+                          w_ridge[2] * p_trans)
 
         rmse_soft = rmse(y_true, ensemble_soft)
         rmse_ridge = rmse(y_true, ensemble_ridge)
 
-        # choose best
         if rmse_soft <= rmse_ridge:
             best_rmse = rmse_soft
             w_best = w_soft
@@ -191,15 +247,20 @@ def main():
 
         rmse_rows.append([
             h,
-            rmse_lstm, rmse_gru, rmse_trans,
+            rmse_lstm,
+            rmse_gru,
+            rmse_trans,
             best_rmse,
-            method
+            method,
+            int(idx.sum()),
         ])
 
         weight_rows.append([
             h,
-            w_best[0], w_best[1], w_best[2],
-            method
+            w_best[0],
+            w_best[1],
+            w_best[2],
+            method,
         ])
 
     # ------------------------------
@@ -214,7 +275,8 @@ def main():
             "rmse_trans",
             "rmse_ensemble",
             "method",
-        ]
+            "n_samples",
+        ],
     )
 
     weights_df = pd.DataFrame(
@@ -225,7 +287,7 @@ def main():
             "w_gru",
             "w_trans",
             "method",
-        ]
+        ],
     )
 
     rmse_path = args.out_dir / "rmse_by_model_and_horizon.csv"
@@ -238,9 +300,9 @@ def main():
     print("[Saved]", weights_path)
 
     # ------------------------------
-    # Plot RMSE
+    # Plot RMSE curves
     # ------------------------------
-    plt.figure(figsize=(10,6))
+    plt.figure(figsize=(10, 6))
     plt.plot(rmse_df["t_int"], rmse_df["rmse_lstm"], label="LSTM")
     plt.plot(rmse_df["t_int"], rmse_df["rmse_gru"], label="GRU")
     plt.plot(rmse_df["t_int"], rmse_df["rmse_trans"], label="Transformer")
@@ -249,10 +311,12 @@ def main():
     plt.ylabel("RMSE")
     plt.title("RMSE by Model and Horizon")
     plt.legend()
-    plt.grid(True)
+    plt.grid(True, linestyle="--", alpha=0.4)
     plt.tight_layout()
-    plt.savefig(args.out_dir / "rmse_curve.png")
-    print("[Saved]", args.out_dir / "rmse_curve.png")
+    plot_path = args.out_dir / "rmse_curve.png"
+    plt.savefig(plot_path)
+    plt.close()
+    print("[Saved]", plot_path)
 
 
 if __name__ == "__main__":
