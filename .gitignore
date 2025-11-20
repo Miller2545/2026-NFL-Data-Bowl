@@ -9,6 +9,8 @@
 *.json
 *.png
 *.txt
+*.pt
+*.keras
 __pycache__
 */models/lstm_frame_conditioned_tf
 !preprocess.py
