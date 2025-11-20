@@ -5,7 +5,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-from torch import nn
 from tqdm.auto import tqdm
 import matplotlib.pyplot as plt
 
@@ -40,18 +39,25 @@ def solve_ridge_weights(y_true, preds_list, alpha=1e-3):
     y_true:   [N,2]
     preds_list: list of [N,2] arrays (LSTM, GRU, Transformer)
     """
-    X = np.stack(preds_list, axis=2)  # [N,2,3]
-    X = X.reshape(-1, 3)              # [2N,3]
-    Y = y_true.reshape(-1)            # [2N]
+    # Stack predictions: [N,2,3] -> [2N,3]
+    X = np.stack(preds_list, axis=2).astype(np.float64)  # force float64
+    X = X.reshape(-1, 3)                                  # [2N,3]
+    Y = y_true.astype(np.float64).reshape(-1)             # [2N]
 
-    A = X.T @ X + alpha * np.eye(3)
-    b = X.T @ Y
+    # Rescale to avoid huge values in X^T X
+    max_abs = max(np.abs(X).max(), np.abs(Y).max(), 1.0)
+    Xs = X / max_abs
+    Ys = Y / max_abs
+
+    # Ridge: (X^T X + αI) w = X^T Y
+    A = Xs.T @ Xs + alpha * np.eye(3, dtype=np.float64)
+    b = Xs.T @ Ys
 
     w = np.linalg.solve(A, b)
-    w = np.maximum(w, 0.0)  # no negative weights
+    # Enforce nonnegative + normalize
+    w = np.maximum(w, 0.0)
     s = w.sum()
     if s <= 0:
-        # fallback: equal weights
         return np.array([1/3, 1/3, 1/3], dtype=np.float64)
     w /= s
     return w
@@ -188,15 +194,12 @@ def main():
     # ------------------------------
     # Horizon (t_int) handling
     # ------------------------------
-    # Ensure we have an integer horizon column
     if "t_int" in rows.columns:
         rows["t_int"] = rows["t_int"].astype(int)
     else:
-        # Fallback: derive from t_input if needed
         if "t_input" in rows.columns:
             rows["t_int"] = rows["t_input"].round().astype(int)
         else:
-            # As an absolute last resort, assume t_int == frame index offset
             rows["t_int"] = np.arange(len(rows), dtype=int)
 
     horizons = sorted(rows["t_int"].unique())
@@ -264,7 +267,7 @@ def main():
         ])
 
     # ------------------------------
-    # Save tables
+    # Save per-model/horizon RMSE + weights
     # ------------------------------
     rmse_df = pd.DataFrame(
         rmse_rows,
@@ -300,13 +303,100 @@ def main():
     print("[Saved]", weights_path)
 
     # ------------------------------
-    # Plot RMSE curves
+    # Build full ensemble predictions using weights_by_h
+    # ------------------------------
+    weights_by_h = {
+        int(row["t_int"]): (row["w_lstm"], row["w_gru"], row["w_trans"])
+        for _, row in weights_df.iterrows()
+    }
+
+    preds_ens = np.zeros_like(pred_lstm, dtype=np.float64)
+    t_ints = rows["t_int"].to_numpy()
+
+    for i in range(N):
+        h = int(t_ints[i])
+        if h in weights_by_h:
+            w_lstm, w_gru, w_trans = weights_by_h[h]
+        else:
+            w_lstm = w_gru = w_trans = 1.0 / 3.0
+
+        preds_ens[i, :] = (
+            w_lstm * pred_lstm[i]
+            + w_gru * pred_gru[i]
+            + w_trans * pred_trans[i]
+        )
+
+    # ------------------------------
+    # Overall RMSE summary (like before)
+    # ------------------------------
+    diff = preds_ens - Y_array
+    mse_vec = np.mean(diff[:, 0]**2 + diff[:, 1]**2)
+    rmse_overall_vec = np.sqrt(mse_vec)
+    rmse_x = rmse(Y_array[:, 0], preds_ens[:, 0])
+    rmse_y = rmse(Y_array[:, 1], preds_ens[:, 1])
+
+    # Competition-style RMSE:
+    # sqrt( sum((dx^2 + dy^2)) / (2N) )
+    comp_rmse = np.sqrt(
+        np.sum(diff[:, 0]**2 + diff[:, 1]**2) / (2.0 * float(N))
+    )
+
+    print("\n==== Weighted Ensemble RMSE (validation) ====")
+    print(f"RMSE_overall_vec : {rmse_overall_vec:.6f}")
+    print(f"RMSE_x           : {rmse_x:.6f}")
+    print(f"RMSE_y           : {rmse_y:.6f}")
+    print(f"Competition RMSE : {comp_rmse:.6f}")
+    print("=============================================")
+
+    # Save competition RMSE to txt (like before)
+    comp_path = args.out_dir / "ensemble_competition_rmse.txt"
+    with open(comp_path, "w") as f:
+        f.write(f"{comp_rmse:.6f}\n")
+    print("[Saved]", comp_path)
+
+    # ------------------------------
+    # Per-horizon ensemble RMSE table (overall/x/y/n)
+    # ------------------------------
+    by_t_records = []
+    for h in horizons:
+        idx = (rows["t_int"] == h).values
+        if not idx.any():
+            continue
+
+        px = preds_ens[idx, 0]
+        py = preds_ens[idx, 1]
+        tx = Y_array[idx, 0]
+        ty = Y_array[idx, 1]
+
+        rmse_overall_h = np.sqrt(np.mean((px - tx)**2 + (py - ty)**2))
+        rmse_x_h = rmse(tx, px)
+        rmse_y_h = rmse(ty, py)
+
+        by_t_records.append({
+            "t_int": int(h),
+            "rmse_overall": rmse_overall_h,
+            "rmse_x": rmse_x_h,
+            "rmse_y": rmse_y_h,
+            "n": int(idx.sum()),
+        })
+
+    by_t_df = pd.DataFrame(by_t_records).sort_values("t_int")
+
+    print("\nEnsemble RMSE by t_int:")
+    print(by_t_df.to_string(index=False))
+
+    by_t_path = args.out_dir / "ensemble_rmse_by_t.csv"
+    by_t_df.to_csv(by_t_path, index=False)
+    print("[Saved]", by_t_path)
+
+    # ------------------------------
+    # Plot RMSE curves (per model & ensemble)
     # ------------------------------
     plt.figure(figsize=(10, 6))
     plt.plot(rmse_df["t_int"], rmse_df["rmse_lstm"], label="LSTM")
     plt.plot(rmse_df["t_int"], rmse_df["rmse_gru"], label="GRU")
     plt.plot(rmse_df["t_int"], rmse_df["rmse_trans"], label="Transformer")
-    plt.plot(rmse_df["t_int"], rmse_df["rmse_ensemble"], label="Ensemble", linewidth=3)
+    plt.plot(rmse_df["t_int"], rmse_df["rmse_ensemble"], label="Ensemble (per-horizon best)", linewidth=3)
     plt.xlabel("t_int (future frame)")
     plt.ylabel("RMSE")
     plt.title("RMSE by Model and Horizon")
