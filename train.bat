@@ -80,6 +80,7 @@ python evaluate_torch_weighted.py ^
   --output_dir data/train ^
   --weeks 15-18 ^
   --n_frames %N_FRAMES% ^
+  --batch_size %BATCH_SIZE% ^
   --model_lstm models/model_lstm/best_model.pt ^
   --model_gru models/model_gru/best_model.pt ^
   --model_trans models/model_transformer/best_model.pt ^
