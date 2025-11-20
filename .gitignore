@@ -1,6 +1,5 @@
 *.csv
 *.xlsx
-*.py
 *.proto
 .Rproj.user
 .Rhistory
@@ -13,7 +12,5 @@
 *.keras
 __pycache__
 */models/lstm_frame_conditioned_tf
-!preprocess.py
-!evaluate.py
-!train_model.py
+*__init__.py
 !/models/best_model.keras
