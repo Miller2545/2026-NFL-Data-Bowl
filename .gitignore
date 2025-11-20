@@ -12,6 +12,6 @@
 __pycache__
 */models/lstm_frame_conditioned_tf
 !preprocess.py
-!evalute.py
+!evaluate.py
 !train_model.py
 !/models/best_model.keras
