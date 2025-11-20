@@ -46,49 +46,93 @@ OUTPUT_DTYPES = {
 }
 
 INPUT_FEATURE_COLS = [
-    "x",
-    "y",
-    "s",
-    "a",
-    "o",
-    "dir",
-    "ball_land_x",
-    "ball_land_y",
-    "absolute_yardline_number",
-    "dx",
-    "dy",
-    "ds",
-    "rel_x_ball",
-    "rel_y_ball",
-    "dist_to_ball_land",
-]
+        "x", "y", "s", "a", "o", "dir",
+        "ball_land_x", "ball_land_y",
+        "absolute_yardline_number",
+        "player_weight_kg",
+        "s_mps", "a_mps2",
+        "vx_mps", "vy_mps",
+        "ax_mps2", "ay_mps2",
+        "px", "py",
+        "ke",
+        "force_x", "force_y",
+        "pos_id_norm", "role_id_norm", "side_id_norm",
+    ]
 
-def _add_physics_features(df: pd.DataFrame) -> pd.DataFrame:
+def add_physics_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Add simple physics/geometry-based features:
-      - dx, dy: frame-to-frame deltas in x,y
-      - ds: frame-to-frame delta in speed
-      - rel_x_ball, rel_y_ball: position relative to ball landing
-      - dist_to_ball_land: distance to ball landing
-    Assumes x,y,ball_land_x,ball_land_y are already normalized.
+    Add basic physics features using speed (s), acceleration (a), direction (dir),
+    and player_weight. Assumes:
+      - s is in yards/second
+      - a is in yards/second^2
+      - dir is in degrees, 0 = pointing towards opponent's endzone, increasing clockwise
+      - player_weight is in pounds (NFL data)
     """
-    # Ensure sorted per player over time
-    df = df.sort_values(["game_id", "play_id", "nfl_id", "frame_id"], kind="mergesort")
 
-    g = df.groupby(["game_id", "play_id", "nfl_id"], sort=False)
+    df = df.copy()
 
-    # frame-to-frame deltas
-    df["dx"] = g["x"].diff().fillna(0.0)
-    df["dy"] = g["y"].diff().fillna(0.0)
-    df["ds"] = g["s"].diff().fillna(0.0)
+    # --- unit conversions ---
+    # weight: pounds -> kg
+    df["player_weight_kg"] = df["player_weight"] * 0.453592
 
-    # distance & relative position to ball landing
-    # (if ball_land_x/y are missing or NaN, we just get NaNs; that’s fine)
-    df["rel_x_ball"] = df["ball_land_x"] - df["x"]
-    df["rel_y_ball"] = df["ball_land_y"] - df["y"]
-    df["dist_to_ball_land"] = np.sqrt(
-        (df["rel_x_ball"] ** 2) + (df["rel_y_ball"] ** 2)
-    )
+    # speed/accel: yards/s -> m/s (optional; we can also keep them in yards)
+    yard_to_meter = 0.9144
+    df["s_mps"] = df["s"] * yard_to_meter
+    df["a_mps2"] = df["a"] * yard_to_meter
+
+    # --- velocity components from speed + direction ---
+    # NFL tracking: dir is usually degrees from x-axis
+    # We'll treat 0 degrees as "toward +x" (right), and standard math orientation.
+    # If the competition docs define differently, adjust here.
+    theta = np.deg2rad(df["dir"].fillna(0.0))
+    df["vx_mps"] = df["s_mps"] * np.cos(theta)
+    df["vy_mps"] = df["s_mps"] * np.sin(theta)
+
+    # --- acceleration components ---
+    df["ax_mps2"] = df["a_mps2"] * np.cos(theta)
+    df["ay_mps2"] = df["a_mps2"] * np.sin(theta)
+
+    # --- momentum components: p = m * v ---
+    df["px"] = df["player_weight_kg"] * df["vx_mps"]
+    df["py"] = df["player_weight_kg"] * df["vy_mps"]
+
+    # --- kinetic energy: KE = 0.5 * m * v^2 ---
+    df["ke"] = 0.5 * df["player_weight_kg"] * (df["s_mps"] ** 2)
+
+    # --- "force-like" proxy: F = m * a ---
+    df["force_x"] = df["player_weight_kg"] * df["ax_mps2"]
+    df["force_y"] = df["player_weight_kg"] * df["ay_mps2"]
+
+    return df
+
+def add_categorical_numeric_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Encode player_position, player_side, player_role as numeric features.
+    This uses simple integer encodings scaled to [0, 1] so that models
+    can still exploit them without explicit embeddings.
+    """
+
+    df = df.copy()
+
+    # position
+    df["player_position_cat"] = df["player_position"].astype("category")
+    df["pos_id"] = df["player_position_cat"].cat.codes
+
+    # role
+    df["player_role_cat"] = df["player_role"].astype("category")
+    df["role_id"] = df["player_role_cat"].cat.codes
+
+    # side
+    df["player_side_cat"] = df["player_side"].astype("category")
+    df["side_id"] = df["player_side_cat"].cat.codes
+
+    # Normalize IDs to [0, 1] (rough but effective)
+    for col in ["pos_id", "role_id", "side_id"]:
+        max_val = df[col].max()
+        if max_val > 0:
+            df[col + "_norm"] = df[col] / max_val
+        else:
+            df[col + "_norm"] = 0.0
 
     return df
 
@@ -178,7 +222,10 @@ def preprocess_inputs(
     input_all = _normalize_xy(input_all)
 
     # Add physics features
-    input_all = _add_physics_features(input_all)
+    input_all = add_physics_features(input_all)
+
+    # --- add categorical numeric features ---
+    input_all = add_categorical_numeric_features(input_all)
 
     # Release context (max frame per player in play)
     idx = _last_frame_idx(input_all, ["game_id","play_id","nfl_id"])
