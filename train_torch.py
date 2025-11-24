@@ -34,7 +34,7 @@ def main():
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--val_split", type=float, default=0.1)
     parser.add_argument("--hidden_units", type=int, default=64)
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--model_dir", type=Path, default=Path("models/lstm_frame_conditioned_torch"))
     parser.add_argument("--arch", type=str, default="lstm", choices=["lstm", "gru", "transformer"], help="Which architecture to train: 'lstm', 'gru', or 'transformer'",
 )
@@ -48,16 +48,46 @@ def main():
     print(f"Weeks: {weeks}")
     print("Building training arrays using preprocess.py ...")
 
-    prep = preprocess_inputs(input_files, n_frames=args.n_frames)
-    X_array, t_input, Y_array, rows = build_training_rows(
-        output_files,
-        release_pois=prep["release_pois"],
-        padded_sequences=prep["padded_sequences"],
-    )
+    cache_dir = Path("cache")
+    cache_dir.mkdir(exist_ok=True)
+
+    cache_X = cache_dir / f"X_w{args.weeks}_nf{args.n_frames}.npy"
+    cache_t = cache_dir / f"t_w{args.weeks}_nf{args.n_frames}.npy"
+    cache_Y = cache_dir / f"Y_w{args.weeks}_nf{args.n_frames}.npy"
+    cache_rows = cache_dir / f"rows_w{args.weeks}_nf{args.n_frames}.csv"
+
+    # -----------------------------
+    # Try loading cached preprocessing
+    # -----------------------------
+    if cache_X.exists() and cache_t.exists() and cache_Y.exists() and cache_rows.exists():
+        print("📦 Loading cached preprocessed arrays...")
+        X_array = np.load(cache_X)
+        t_input = np.load(cache_t)
+        Y_array = np.load(cache_Y)
+        rows = pd.read_csv(cache_rows)
+
+    else:
+        print("⚙️ Running preprocessing pipeline...")
+        prep = preprocess_inputs(input_files, n_frames=args.n_frames)
+        X_array, t_input, Y_array, rows = build_training_rows(
+            output_files,
+            release_pois=prep["release_pois"],
+            padded_sequences=prep["padded_sequences"],
+        )
+
+        # Save cache
+        np.save(cache_X, X_array)
+        np.save(cache_t, t_input)
+        np.save(cache_Y, Y_array)
+        rows.to_csv(cache_rows, index=False)
+        print("✅ Cached preprocessing to disk.")
 
     print(f"X_array shape: {X_array.shape}  (N, time, features)")
     print(f"t_input shape: {t_input.shape}  (N, 1)")
     print(f"Y_array shape: {Y_array.shape}  (N, 2)")
+    print("Feature stats:")
+    print("min:", np.nanmin(X_array), "max:", np.nanmax(X_array))
+    print("mean:", np.nanmean(X_array), "std:", np.nanstd(X_array))
 
     N, n_in_steps, n_features = X_array.shape
 
