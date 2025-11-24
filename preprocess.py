@@ -333,6 +333,16 @@ def preprocess_inputs(
 
     input_all = add_field_geometry_and_interaction_features(input_all)
 
+    # Only clean columns we actually feed into the model
+    feat_cols = [c for c in INPUT_FEATURE_COLS if c in input_all.columns]
+
+    # Replace inf/-inf -> NaN, then NaN -> 0
+    input_all[feat_cols] = (
+        input_all[feat_cols]
+        .replace([np.inf, -np.inf], np.nan)
+        .fillna(0.0)
+    )
+
     # Release context (max frame per player in play)
     idx = _last_frame_idx(input_all, ["game_id","play_id","nfl_id"])
     release_ctx = input_all.loc[idx].copy().reset_index(drop=True)
