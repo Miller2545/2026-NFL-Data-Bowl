@@ -13,7 +13,7 @@ from tqdm.auto import tqdm
 from preprocess import preprocess_inputs, build_training_rows
 from model_torch import LSTMFrameConditionedModel, TransformerFrameConditionedModel, GRUFrameConditionedModel
 
-warmup_epochs = 5
+warmup_epochs = 10
 
 def parse_weeks(s: str):
     s = s.strip()
@@ -140,12 +140,18 @@ def main():
         model = TransformerFrameConditionedModel(
             n_in_steps=n_in_steps,
             n_features=n_features,
-            d_model=64,
-            n_heads=4,
-            num_layers=2,
-            dim_feedforward=128,
-            dropout=0.1,
+            d_model=96,
+            n_heads=3,
+            num_layers=3,
+            dim_feedforward=256,
+            dropout=0.2,
         ).to(device)
+
+
+    if args.arch == "transformer":
+        clip_max_norm = 0.5
+    else:
+        clip_max_norm = 1.0
 
     print(f"Using architecture: {args.arch}")
     print(model)
@@ -155,14 +161,16 @@ def main():
     if args.arch == "transformer":
         optimizer = torch.optim.AdamW(
             model.parameters(),
-            lr=args.lr,
+            lr=1e-4,
             weight_decay=1e-2,
         )
+        patience = 15
     else:
         optimizer = torch.optim.Adam(
             model.parameters(),
-            lr=args.lr,
+            lr=1e-3,
         )
+        patience = 10
 
     warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
         optimizer,
@@ -187,7 +195,6 @@ def main():
 
     best_val_loss = float("inf")
     best_state = None
-    patience = 10
     patience_counter = 0
 
     history = {
@@ -211,22 +218,24 @@ def main():
             yb = yb.to(device)
 
             optimizer.zero_grad()
-
-            # ----- AMP forward + backward -----
+            # ---------- Forward pass (AMP) ----------
             with torch.amp.autocast("cuda", enabled=use_cuda):
                 preds = model(xb, tb)
                 loss = criterion(preds, yb)
 
+            # ---------- Backward ----------
             scaler.scale(loss).backward()
+
+            # ---------- Unscale gradients first ----------
+            scaler.unscale_(optimizer)
+
+            # ---------- Gradient clipping ----------
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_max_norm)
+
+            # ---------- Optimizer step ----------
             scaler.step(optimizer)
             scaler.update()
-
-            bs = xb.size(0)
-            train_loss_sum += loss.item() * bs
-            train_count += bs
-
-            current_train_loss = train_loss_sum / train_count
-            prog_bar.set_postfix(loss=current_train_loss)
+            optimizer.zero_grad(set_to_none=True)
 
         train_loss = train_loss_sum / train_count
 
