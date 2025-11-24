@@ -146,11 +146,12 @@ def main():
     trans = TransformerFrameConditionedModel(
         n_in_steps=T,
         n_features=F,
-        d_model=64,
-        n_heads=4,
-        num_layers=2,
-        dim_feedforward=128,
+        d_model=128,
+        n_heads=8,
+        num_layers=3,
+        dim_feedforward=256,
         dropout=0.1,
+        conv_kernel_size=3
     ).to(device)
     trans.load_state_dict(torch.load(args.model_trans, map_location=device))
     trans.eval()
