@@ -14,3 +14,4 @@ __pycache__
 */models/lstm_frame_conditioned_tf
 *__init__.py
 !/models/best_model.keras
+cache/*
