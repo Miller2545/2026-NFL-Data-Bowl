@@ -5,6 +5,11 @@ from typing import List, Tuple, Dict, Optional
 import numpy as np
 import pandas as pd
 
+FIELD_WIDTH = 53.3
+FIELD_CENTER_Y = FIELD_WIDTH / 2.0
+FIELD_LENGTH = 120.0
+YARD_TO_METER = 0.9144
+
 # ----------------------------
 # Shared helpers/readers
 # ----------------------------
@@ -75,10 +80,8 @@ def add_physics_features(df: pd.DataFrame) -> pd.DataFrame:
     # weight: pounds -> kg
     df["player_weight_kg"] = df["player_weight"] * 0.453592
 
-    # speed/accel: yards/s -> m/s (optional; we can also keep them in yards)
-    yard_to_meter = 0.9144
-    df["s_mps"] = df["s"] * yard_to_meter
-    df["a_mps2"] = df["a"] * yard_to_meter
+    df["s_mps"] = df["s"] * YARD_TO_METER
+    df["a_mps2"] = df["a"] * YARD_TO_METER
 
     # --- velocity components from speed + direction ---
     # NFL tracking: dir is usually degrees from x-axis
@@ -133,6 +136,98 @@ def add_categorical_numeric_features(df: pd.DataFrame) -> pd.DataFrame:
             df[col + "_norm"] = df[col] / max_val
         else:
             df[col + "_norm"] = 0.0
+
+    return df
+
+def add_field_geometry_and_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add per-player field geometry features and multi-agent interaction features.
+
+    Expects columns:
+      - game_id, play_id, frame_id
+      - x, y  (already normalized so offense goes to the right)
+      - player_side (same value => teammate, different => opponent)
+    """
+
+    # ---------- 1) Field geometry features ----------
+    df = df.copy()
+
+    # Distance to each sideline
+    df["dist_sideline_left"] = df["y"]
+    df["dist_sideline_right"] = FIELD_WIDTH - df["y"]
+
+    # Nearest sideline
+    df["dist_sideline_nearest"] = np.minimum(
+        df["dist_sideline_left"], df["dist_sideline_right"]
+    )
+
+    # Distance to center stripe
+    df["dist_field_center"] = (df["y"] - FIELD_CENTER_Y).abs()
+
+    # Distance to far endzone (assuming offense always to the right)
+    df["dist_endzone"] = FIELD_LENGTH - df["x"]
+
+    # We'll compute these per (game, play, frame)
+    def per_frame_features(g: pd.DataFrame) -> pd.DataFrame:
+        """
+        g: rows for a single (game_id, play_id, frame_id)
+        """
+        n = len(g)
+        if n <= 1:
+            # Edge case: only one player? Just fill NaNs / zeros.
+            return g.assign(
+                dist_nearest_teammate=np.nan,
+                dist_nearest_opponent=np.nan,
+                opp_within_3=0,
+                opp_within_5=0,
+                opp_within_10=0,
+            )
+
+        # Positions [n,2]
+        pos = g[["x", "y"]].to_numpy(dtype=np.float32)
+
+        # Pairwise distances [n,n]
+        dx = pos[:, 0][:, None] - pos[:, 0][None, :]
+        dy = pos[:, 1][:, None] - pos[:, 1][None, :]
+        dmat = np.sqrt(dx * dx + dy * dy)  # Euclidean distance
+
+        # Prevent self-distance from being counted
+        np.fill_diagonal(dmat, np.inf)
+
+        # Team masks: same side vs opponent
+        side = g["player_side"].to_numpy()
+        same_team = side[:, None] == side[None, :]   # [n,n] bool
+        opp_team = ~same_team
+
+        # Distances to teammates/opponents (inf where not applicable)
+        d_team = np.where(same_team, dmat, np.inf)
+        d_opp = np.where(opp_team, dmat, np.inf)
+
+        # Nearest teammate / opponent distance
+        dist_nearest_teammate = np.min(d_team, axis=1)
+        dist_nearest_opponent = np.min(d_opp, axis=1)
+
+        # If a player has no valid teammate/opponent (e.g., special cases), set NaN
+        dist_nearest_teammate[~np.isfinite(dist_nearest_teammate)] = np.nan
+        dist_nearest_opponent[~np.isfinite(dist_nearest_opponent)] = np.nan
+
+        # Counts of opponents within certain radii
+        opp_within_3 = np.sum(d_opp < 3.0, axis=1)
+        opp_within_5 = np.sum(d_opp < 5.0, axis=1)
+        opp_within_10 = np.sum(d_opp < 10.0, axis=1)
+
+        return g.assign(
+            dist_nearest_teammate=dist_nearest_teammate,
+            dist_nearest_opponent=dist_nearest_opponent,
+            opp_within_3=opp_within_3,
+            opp_within_5=opp_within_5,
+            opp_within_10=opp_within_10,
+        )
+
+    df = (
+        df.groupby(["game_id", "play_id", "frame_id"], group_keys=False)
+          .apply(per_frame_features)
+    )
 
     return df
 
@@ -191,7 +286,7 @@ def _build_padded_for_group(df: pd.DataFrame, n_frames: int) -> Tuple[int, np.nd
 
 
 # ============================================================
-# 1) TRAIN/TEST-AGNOSTIC INPUT PREPROCESSOR
+# 1) INPUT PREPROCESSOR
 #    Loads inputs, normalizes, finds release context, and
 #    returns padded sequences per (game, play, nfl_id).
 # ============================================================
