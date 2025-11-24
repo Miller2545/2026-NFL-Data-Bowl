@@ -61,7 +61,19 @@ INPUT_FEATURE_COLS = [
         "px", "py",
         "ke",
         "force_x", "force_y",
-        "pos_id_norm", "role_id_norm", "side_id_norm",
+        "pos_id_norm",
+        "role_id_norm",
+        "side_id_norm",
+        "dist_sideline_left",
+        "dist_sideline_right",
+        "dist_sideline_nearest",
+        "dist_field_center",
+        "dist_endzone",
+        "dist_nearest_teammate",
+        "dist_nearest_opponent",
+        "opp_within_3",
+        "opp_within_5",
+        "opp_within_10",
     ]
 
 def add_physics_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -313,14 +325,13 @@ def preprocess_inputs(
     # Load and concat
     input_all = pd.concat([_read_input_week(Path(p)) for p in input_files], ignore_index=True)
 
-    # Normalize coordinates
     input_all = _normalize_xy(input_all)
 
-    # Add physics features
     input_all = add_physics_features(input_all)
 
-    # --- add categorical numeric features ---
     input_all = add_categorical_numeric_features(input_all)
+
+    input_all = add_field_geometry_and_interaction_features(input_all)
 
     # Release context (max frame per player in play)
     idx = _last_frame_idx(input_all, ["game_id","play_id","nfl_id"])
