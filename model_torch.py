@@ -135,18 +135,12 @@ class TimePositionalEncoding(nn.Module):
 
 class TransformerFrameConditionedModel(nn.Module):
     """
-    Frame-conditioned model with:
-      - temporal Conv1D over features across time
-      - Transformer encoder (pre-norm) over sequence
-      - CLS token for pooling
-      - separate time-conditioning branch
-      - MLP head to predict (x, y)
-
-    Inputs:
-      seq_input : [B, T, F]
-      time_input: [B, 1]
-    Output:
-      [B, 2]  (predicted x, y)
+    Transformer with:
+      - Temporal Conv1D
+      - CLS token
+      - Positional encoding
+      - Padding mask (very important)
+      - Time-conditioning branch
     """
 
     def __init__(
@@ -163,10 +157,10 @@ class TransformerFrameConditionedModel(nn.Module):
         super().__init__()
         self.n_in_steps = n_in_steps
         self.n_features = n_features
+        self.d_model = d_model
 
-        # --- Temporal Conv1D over time (local motion patterns) ---
-        # Conv1d expects [B, C(in), T]; we use channels = features.
-        padding = conv_kernel_size // 2  # keep length == n_in_steps
+        # ---- Temporal Conv1D ----
+        padding = conv_kernel_size // 2
         self.temporal_conv = nn.Conv1d(
             in_channels=n_features,
             out_channels=n_features,
@@ -174,31 +168,33 @@ class TransformerFrameConditionedModel(nn.Module):
             padding=padding,
         )
 
-        # Project features -> transformer model dimension
+        # ---- Projection ----
         self.input_proj = nn.Linear(n_features, d_model)
 
-        # CLS token + positional encoding (T + 1 for CLS)
+        # ---- CLS token ----
         self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
+
+        # ---- Positional encoding ----
         self.pos_encoding = TimePositionalEncoding(d_model, max_len=n_in_steps + 1)
 
-        # Pre-norm transformer encoder
+        # ---- Transformer encoder (pre-norm) ----
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=n_heads,
             dim_feedforward=dim_feedforward,
             dropout=dropout,
-            batch_first=True,   # we use [B, T, D]
-            norm_first=True,    # pre-layernorm, usually more stable
+            batch_first=True,
+            norm_first=True,
         )
         self.transformer_encoder = nn.TransformerEncoder(
             encoder_layer,
             num_layers=num_layers,
         )
 
-        # Time-conditioning branch
+        # ---- Time-conditioning branch ----
         self.time_fc = nn.Linear(1, 16)
 
-        # MLP head after concatenation of CLS + time_encoding
+        # ---- MLP head ----
         self.fc1 = nn.Linear(d_model + 16, 128)
         self.fc2 = nn.Linear(128, 64)
         self.fc_out = nn.Linear(64, 2)
@@ -207,39 +203,67 @@ class TransformerFrameConditionedModel(nn.Module):
 
     def forward(self, seq_input: torch.Tensor, time_input: torch.Tensor) -> torch.Tensor:
         """
-        seq_input : [B, T, F]
+        seq_input: [B, T, F]
         time_input: [B, 1]
         """
-        B, T, feat_dim = seq_input.shape 
+        B, T, feat_dim = seq_input.shape  # <- rename F to feat_dim
 
-        # ---- Temporal Conv1D over time ----
-        x = seq_input.transpose(1, 2)      # [B, feat_dim, T]
-        x = self.temporal_conv(x)          # [B, feat_dim, T]
-        x = F.relu(x)                      
-        x = x.transpose(1, 2)              # [B, T, feat_dim]
+        # ------------------------------------------------
+        # 1. Build padding mask  (True = masked/padded)
+        # ------------------------------------------------
+        pad_mask = torch.all(seq_input.abs() < 1e-6, dim=-1)   # [B, T]
+        cls_pad = torch.zeros((B, 1), dtype=torch.bool, device=seq_input.device)
+        attn_mask = torch.cat([cls_pad, pad_mask], dim=1)      # [B, 1+T]
 
-        # ---- Project into transformer d_model ----
-        x = self.input_proj(x)             # [B, T, D]
+        # ------------------------------------------------
+        # 2. Conv1D over time
+        # ------------------------------------------------
+        x = seq_input.transpose(1, 2)        # [B, feat_dim, T]
+        x = self.temporal_conv(x)
+        x = F.relu(x)
+        x = x.transpose(1, 2)                # [B, T, feat_dim]
 
-        # ---- Add CLS token ----
+        # ------------------------------------------------
+        # 3. Project to Transformer dimension
+        # ------------------------------------------------
+        x = self.input_proj(x)               # [B, T, D]
+
+        # ------------------------------------------------
+        # 4. Add CLS token
+        # ------------------------------------------------
         cls = self.cls_token.expand(B, 1, -1)   # [B, 1, D]
         x = torch.cat([cls, x], dim=1)          # [B, 1+T, D]
 
-        # ---- Positional encoding & transformer ----
-        x = self.pos_encoding(x)                # [B, 1+T, D]
-        x = self.transformer_encoder(x)         # [B, 1+T, D]
+        # ------------------------------------------------
+        # 5. Add positional encoding
+        # ------------------------------------------------
+        x = self.pos_encoding(x)
 
-        # Take CLS output as sequence summary
-        cls_out = x[:, 0, :]                    # [B, D]
+        # ------------------------------------------------
+        # 6. Transformer with padding mask
+        # ------------------------------------------------
+        x = self.transformer_encoder(
+            x,
+            src_key_padding_mask=attn_mask
+        )                                       # [B, 1+T, D]
+
+        # ------------------------------------------------
+        # 7. CLS → global representation
+        # ------------------------------------------------
+        cls_out = x[:, 0, :]
         cls_out = self.dropout(cls_out)
 
-        # ---- Time-conditioning branch ----
-        t_enc = F.relu(self.time_fc(time_input))   # [B, 16]
+        # ------------------------------------------------
+        # 8. Time-conditioning
+        # ------------------------------------------------
+        t_enc = F.relu(self.time_fc(time_input))
 
-        # ---- Merge and predict (x, y) ----
-        merged = torch.cat([cls_out, t_enc], dim=-1)  # [B, D+16]
+        # ------------------------------------------------
+        # 9. Head
+        # ------------------------------------------------
+        merged = torch.cat([cls_out, t_enc], dim=-1)
         z = F.relu(self.fc1(merged))
         z = F.relu(self.fc2(z))
-        out = self.fc_out(z)                         # [B, 2]
+        out = self.fc_out(z)
 
         return out
